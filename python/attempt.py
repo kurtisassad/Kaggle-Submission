@@ -11,7 +11,6 @@ import seaborn as sns
 
 predict_these = pd.read_csv("test_predictors.csv")
 data = pd.read_csv("trainingdata.csv")
-rmse = lambda x: np.sqrt(mean_squared_error(x))
 
 # f,ax = plt.subplots(figsize=(18, 18))
 # sns.heatmap(data.corr(), annot=True, linewidths=.5, fmt= '.1f',ax=ax)
