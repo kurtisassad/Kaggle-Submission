@@ -1,6 +1,8 @@
 require(caret)
 require(gsubfn)
 require(glmnet)
+require(nnet)
+require(rpart)
 
 if(getwd() != "/home/kurt/Desktop/sta314/data"){
   setwd("/home/kurt/Desktop/sta314/data")
@@ -11,6 +13,12 @@ if(getwd() != "/home/kurt/Desktop/sta314/R"){
   setwd("/home/kurt/Desktop/sta314/R")
 }
 
+if(F){
+temp = data$y
+data = predict(preProcess(data[, -1], method=c("center", "scale")),data[,-1])
+data$y = temp
+predict_these= predict(preProcess(predict_these[, -1], method=c("center", "scale")),predict_these[,-1])
+}
 rmse <- function(actual,predicted){
   sqrt(sum(actual-predicted)^2/length(actual))
 }
@@ -19,13 +27,7 @@ partition_data <- function(data,split_percent){
   train_index = createDataPartition(data$y,p=split_percent, list=FALSE)
   train_data = data[train_index,]
   test_data = data[-train_index,]
-  x_train <- train_data
-  x_train$y <- NULL
-  y_train <- train_data$y
-  x_test <- test_data
-  x_test$y <- NULL
-  y_test <- test_data$y
-  return(list(x_train=x_train,y_train=y_train,x_test=x_test,y_test=y_test))
+  return(list(train_data=train_data,test_data=test_data))
 }
 
 k_fold_partition <- function(data,k){
@@ -78,20 +80,30 @@ p_val_forward_selection <- function(data,max_exp){
   }
 }
 
-lasso_prediciton <- function(x_train,y_train,x_test,y_test,lambda){
-  x_train <- as.matrix(x_train)
-  x_test <- as.matrix(x_test)
-  lasso_model <- glmnet(x_train, y_train, alpha = 1, lambda = lambda)
-  err <- rmse(predict(lasso_model,newx=x_test),y_test)
-  return(list(model=lasso_model,err=err))
+lasso_prediction <- function(x_train,y_train,x_test,y_test,lambda){
+  x_train <- as.matrix(train_data[,-1])
+  x_test <- as.matrix(test_data[,-1])
+  lasso_model <- glmnet(x_train, train_data[,1], alpha = 1, lambda = lambda)
+  err <- rmse(predict(lasso_model,newx=x_test),test_data[,1])
 }
 
-ridge_prediciton <- function(x_train,y_train,x_test,y_test,lambda){
-  x_train <- as.matrix(x_train)
-  x_test <- as.matrix(x_test)
-  ridge_model <- glmnet(x_train, y_train, alpha = 0, lambda = lambda)
-  err <- rmse(predict(ridge_model,newx=x_test),y_test)
-  return(list(model=ridge_model,err=err))
+ridge_prediction <- function(train_data,test_data,lambda){
+  x_train <- as.matrix(train_data[,-1])
+  x_test <- as.matrix(test_data[,-1])
+  ridge_model <- glmnet(x_train, train_data[,1], alpha = 0, lambda = lambda)
+  return(rmse(predict(ridge_model,newx=x_test),test_data[,1]))
+  
+}
+
+nn_prediction <- function(train_data,test_data,hparam){
+  nn_model <- nnet(y~.,data=train_data,linout=TRUE,size=floor(hparam),maxit=100,trace=F)
+  return(rmse(predict(nn_model,newdata=test_data[,-1]),test_data[,1]))
+}
+
+dtree_prediction <- function(train_data,test_data,hparam){
+  tree_model <- rpart(y~.,data=train_data)
+  tree_model <- prune(tree_model,cp=hparam)
+  return(rmse(predict(tree_model,newdata=test_data[,-1]),test_data[,1]))
 }
 
 turn_into_csv <- function(data){
@@ -100,44 +112,39 @@ turn_into_csv <- function(data){
   write.csv(da.sample,file='Submission.csv',row.names=FALSE)
 }
 
-k_fold_model <- function(k,hparam_vals,model_function,iters){
+k_fold_model <- function(data,k,hparam_vals,model_function,iters){
   rmse_list <- array(0,length(hparam_vals))
   for(l in 1:iters){
+    print(paste("iteration",l))
     partitions <- k_fold_partition(data,k)
-    for(m in 1:length(hparam_vals)){
-      hparam <- hparam_vals[m]
-      for(i in 1:length(partitions)){
-        test_data <- partitions[[i]]
-        train_data <- data.frame()
-        for(j in 1:length(partitions)){
-          if(j != i){
-            train_data <- rbind(train_data,partitions[[j]])
-          }
+    for(i in 1:length(partitions)){
+      test_data <- partitions[[i]]
+      train_data <- data.frame()
+      for(j in 1:length(partitions)){
+        if(j != i){
+          train_data <- rbind(train_data,partitions[[j]])
         }
-        x_train <- train_data
-        x_train$y <- NULL
-        y_train <- train_data$y
-        x_test <- test_data
-        x_test$y <- NULL
-        y_test <- test_data$y
-        list[model,err] <- model_function(x_train,y_train,x_test,y_test,hparam)
+      }
+      for(m in 1:length(hparam_vals)){
+        hparam <- hparam_vals[m]
+        err <- model_function(train_data,test_data,hparam)
         rmse_list[m] <- rmse_list[m] + err
       }
     }
-    for(i in 1:length(hparam_vals)){
-      rmse_list[i] <- rmse_list[i]/(length(partitions)*length(iters))
-    }
+  }
+  for(i in 1:length(hparam_vals)){
+    rmse_list[i] <- rmse_list[i]/(k*iters)
   }
   plot(hparam_vals,rmse_list)
-  print(min(rmse_list))
+  print("RMSE list corresponding to hyperparameters",rmse_list)
+  print(paste("minimum RMSE",min(rmse_list)))
   best_hparam = hparam_vals[which.min(rmse_list)]
-  print(best_hparam)
+  print(paste("best hyperparameter",best_hparam))
   return(best_hparam)
 }
-hparam_vals = seq(0, 0.2, length.out = 100)
-best_hparam = k_fold_model(5,hparam_vals,lasso_prediciton,10)
 
-#if(F){
+
+if(F){
 #fit final model to all data
 x_train <- data
 x_train$y <- NULL
@@ -152,7 +159,7 @@ predict_these$X1.500 <- NULL
 #turn into predictions
 y <- predict(model,newx=as.matrix(predict_these))
 turn_into_csv(y)
-#}
+}
 
 #partition data into training and validaion set
 #list[x_train,y_train,x_test,y_test] = partition_data(data,0.8)
@@ -162,3 +169,27 @@ turn_into_csv(y)
 #print(lin_rmse)
 #print(lasso_rmse)
 #turn_into_csv(y)
+
+#fresh attempt
+factors = c("X11","X15","X17","X12")
+maybe = c("X13","X12")
+data[,factors] <- lapply(round(data[,factors]),FUN=factor)
+
+#hparam_vals = 10^seq(0, -10, length.out = 20)
+hparam_vals = seq(1, 10, length.out = 10)
+best_hparam = k_fold_model(data,5,hparam_vals,nn_prediction,5)
+
+#list[train_data,test_data] = partition_data(data,0.8)
+
+#plot(tree_model,uniform=T)
+#text(tree_model)
+#barplot(tree_model$variable.importance,las=2)
+#print(summary(mod))
+
+
+
+
+
+
+
+
